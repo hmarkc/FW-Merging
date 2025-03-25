@@ -1,0 +1,17 @@
+merge_method: frank_wolfe_merge
+base_model: roberta-base
+models_to_merge: auto
+models_name: auto
+exclude_param: auto
+model_loader: auto
+dtype: auto
+max_iters: 10
+step_size: 1
+# proxy_dataset_path: data/test.json
+proxy_dataset_path: data/proxy_800.json 
+
+# for merge
+second_merge_method: ties_merge
+second_merge_config: 
+  mask_rate: 0.7
+  scaling: 0.9

@@ -1,0 +1,18 @@
+{
+  "code": "arnavgrg/codealpaca-qlora",
+  "pubmedqa": "SanjanaR01/medical-dialogue-summary-llama2-7b-peft-qlora",
+  "cnn": "ernlavr/llama2-7bn-xsum-cnn-lora-adapter", 
+  "piqa": "Styxxxx/llama2_7b_lora-piqa", 
+  "wmt": "Styxxxx/llama2_7b_lora-wmt16_translate_roen", 
+  "other-1": "Styxxxx/llama2_7b_lora-wmt16_translate_csen",
+  "other-2": "Styxxxx/llama2_7b_lora-wmt16_translate_deen",
+  "other-3": "Styxxxx/llama2_7b_lora-wmt16_translate_fien",
+  "other-4": "Styxxxx/llama2_7b_lora-wmt16_translate_ruen", 
+  "other-5": "Styxxxx/llama2_7b_lora-wmt16_translate_tren", 
+  "other-6": "Styxxxx/llama2_7b_lora-wnli",
+  "other-7": "Styxxxx/llama2_7b_lora-sst2", 
+  "other-8": "Styxxxx/llama2_7b_lora-snli",
+  "other-9": "Styxxxx/llama2_7b_lora-rte",
+  "other-10": "Styxxxx/llama2_7b_lora-qnli",
+  "other-11": "Styxxxx/llama2_7b_lora-cola"
+}

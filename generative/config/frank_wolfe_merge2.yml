@@ -1,0 +1,15 @@
+merge_method: frank_wolfe_merge
+base_model: meta-llama/Llama-2-7b-hf
+models_to_merge: auto
+models_name: auto
+exclude_param: auto
+model_loader: auto
+dtype: auto
+max_iters: 10
+step_size: 1
+proxy_dataset_path: data/proxy_300.json 
+
+# for merge
+second_merge_method: task_arithmetic
+second_merge_config: 
+  scaling: 0.3
