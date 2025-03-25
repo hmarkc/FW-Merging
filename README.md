@@ -1,6 +1,6 @@
 # FW-Merging
 
-This repository provides the official implementation of **Frank-Wolfe Merging (FW-Merging)**, a method that frames large-scale model merging as a constrained optimization problem. Fine-tuned checkpoints define the constraint set, while the objective dictates the desired properties of the merged model.  
+This repository provides the official implementation of [**Frank-Wolfe Merging**](https://arxiv.org/abs/2503.12649) **(FW-Merging)**, a method that frames large-scale model merging as a constrained optimization problem. Fine-tuned checkpoints define the constraint set, while the objective dictates the desired properties of the merged model.  
 
 Inspired by Frank-Wolfe optimization, FW-Merging contains three key stages:  
 
@@ -24,6 +24,15 @@ Our experiments show that FW-Merging remains stable with **16 irrelevant models*
 ## BibTeX
 
 ```
+@misc{chen2025fwmergingscalingmodelmerging,
+      title={FW-Merging: Scaling Model Merging with Frank-Wolfe Optimization}, 
+      author={Hao Mark Chen and Shell Xu Hu and Wayne Luk and Timothy Hospedales and Hongxiang Fan},
+      year={2025},
+      eprint={2503.12649},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2503.12649}, 
+}
 ```
 
 ## Contents
