@@ -1,0 +1,14 @@
+{
+  "Synthia-7B-v1.2": "migtissera/Synthia-7B-v1.2",
+  "Llama-2-7b-evolcodealpaca": "neuralmagic/Llama-2-7b-evolcodealpaca",
+  "OpenHermes-7B": "teknium/OpenHermes-7B",
+  "pygmalion-2-7b": "PygmalionAI/pygmalion-2-7b",
+  "Llama-2-7b-chat-hf": "meta-llama/Llama-2-7b-chat-hf",
+  "BeingWell_llama2_7b": "Severus27/BeingWell_llama2_7b",
+  "MetaMath-7B-V1.0": "meta-math/MetaMath-7B-V1.0",
+  "vicuna-7b-v1.5": "lmsys/vicuna-7b-v1.5",
+  "Platypus2-7B": "garage-bAInd/Platypus2-7B",
+  "GOAT-7B-Community": "GOAT-AI/GOAT-7B-Community",
+  "Llama-2-7b-WikiChat-fused": "stanford-oval/Llama-2-7b-WikiChat-fused",
+  "dolphin-llama2-7b": "cognitivecomputations/dolphin-llama2-7b"
+}
