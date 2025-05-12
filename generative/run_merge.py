@@ -28,32 +28,40 @@ import pandas as pd
 from safetensors.torch import load_file
 
 args = None
-DEVICE='cuda:0'
+DEVICE='cuda:0,1'
 
 
 # @torch.inference_mode()
 def run_merge(
     args,
 ):  
+    base_model_name = "meta-llama/Llama-2-7b-hf"
+    model_dir = "../which12"
+    args.exclude_param = [
+        "model.embed_tokens",  # Embedding layers
+        "model.norm",  # Final layernorm
+        "lm_head",  # lm_head
+        "model.layers.*.self_attn.rotary_emb"  # Position embeddings
+    ]
     if args.exclude_param and len(args.exclude_param):
         filter_func = lambda n,p : not any([
             re.match(exclude_pattern, n) 
             for exclude_pattern in args.exclude_param
         ])
-    # \theta_t
-    models_finetuned = {
-        name: load_causallm(name) for name in args.models_name
-    }
-    # \theta_*
+
+    models_finetuned = {}
+    for model in os.listdir(model_dir):
+        models_finetuned[model] = load_causallm(os.path.join(model_dir, model), device_map='cpu')
+        
     models_to_merge = [
         models_finetuned[name]
         for name in args.src_merge
     ]
-    base_model = load_causallm(args.base_model)
-    # tokenizer = AutoTokenizer.from_pretrained(args.base_model)
+    # Load base model in CPU first
+    base_model = load_causallm(args.base_model, device_map='cpu')
 
     args.base_model = param(base_model)
-    args.models_to_merge = [param(m) for m in models_to_merge]
+    args.models_to_merge = [param(m) for m in models_to_merge]  # Already on CPU
     for model in args.models_to_merge:
         model.filter(filter_func)
     args.base_model.filter(filter_func)
@@ -63,17 +71,51 @@ def run_merge(
     merge_method = getattr(merger, args.merge_method)
     merged_param = merge_method(**args)
 
+    # Keep merged parameters on CPU
     for n, p in merged_param.param_dict.items():
         utils.rsetattr(base_model, n, torch.nn.Parameter(p, requires_grad=False)) 
 
     base_model.save_pretrained(args.outdir)
 
+    # Move all parameters to a single GPU for functional_call
+    def move_to_single_gpu(model):
+        # Get the first GPU device
+        device = torch.device('cuda:0')
+        # Move all parameters to the same GPU
+        for param in model.parameters():
+            param.data = param.data.to(device)
+        return model
+
+    # Move the base model to a single GPU
+    base_model = move_to_single_gpu(base_model)
+    return base_model
+
 # @torch.inference_mode()
 def run_merge_lora(
     args,
 ):    
+    my_models = {
+        "Synthia-7B-v1.2": "migtissera/Synthia-7B-v1.2",
+        "Llama-2-7b-evolcodealpaca": "neuralmagic/Llama-2-7b-evolcodealpaca",
+        "OpenHermes-7B": "teknium/OpenHermes-7B",
+        "pygmalion-2-7b": "PygmalionAI/pygmalion-2-7b",
+        "Llama-2-7b-chat-hf": "meta-llama/Llama-2-7b-chat-hf",
+        "BeingWell_llama2_7b": "Severus27/BeingWell_llama2_7b",
+        "MetaMath-7B-V1.0": "meta-math/MetaMath-7B-V1.0",
+        "vicuna-7b-v1.5": "lmsys/vicuna-7b-v1.5",
+        "Platypus2-7B": "garage-bAInd/Platypus2-7B",
+        "GOAT-7B-Community": "GOAT-AI/GOAT-7B-Community",
+        "Llama-2-7b-WikiChat-fused": "stanford-oval/Llama-2-7b-WikiChat-fused",
+        "dolphin-llama2-7b": "cognitivecomputations/dolphin-llama2-7b"
+    }
     base_model_name = "meta-llama/Llama-2-7b-hf"
-    model_dir = "../llama"
+    model_dir = "./which12"
+    args.exclude_param = [
+        "model.embed_tokens",  # Embedding layers
+        "model.norm",  # Final layernorm
+        "lm_head",  # lm_head
+        "model.layers.*.self_attn.rotary_emb"  # Position embeddings
+    ]
     if args.exclude_param and len(args.exclude_param):
         filter_func = lambda n,p : not any([
             re.match(exclude_pattern, n) 
@@ -82,44 +124,34 @@ def run_merge_lora(
 
     # Load the tokenizer and model
     args.tokenizer = AutoTokenizer.from_pretrained(base_model_name)
-    peft_config = LoraConfig(**json.load(open(args.lora)))
-
+    
     def load(model_path):
-        try:
-            ans = torch.load(
-                os.path.join(model_path, 'adapter_model.bin')
-            )
-        except:
-            ans = load_file(os.path.join(model_path, 'adapter_model.safetensors'))
+        print(f'>>> new vocab size:', args.tokenizer.vocab_size)
+        ans = load_causallm(model_path, device_map='cpu', new_vocab_size=args.tokenizer.vocab_size)
+        # print vocab size and number of parameters
+        print(f'>>> {model_name} emebdding layer size:', ans.model.embed_tokens.weight.shape)
+        print(f'>>> {model_name} number of parameters:', sum(p.numel() for p in ans.parameters()))
         return ans
     
-    base_model = load_causallm(base_model_name).to('cuda')
+    base_model = load_causallm(base_model_name, device_map='cpu', new_vocab_size=args.tokenizer.vocab_size)
     models_to_merge = []
     model_names = []
     lora_keys = {}
     for model_name in os.listdir(model_dir):
-        if 'llama' not in model_name:
+        if model_name not in my_models:
             continue
-        model_to_merge = param(load(os.path.join(model_dir, model_name)))
-        for old_key in list(model_to_merge.param_dict.keys()):
-            if 'lora' in old_key:
-                new_key = old_key.replace('lora_B', 'lora_B.merged').replace('lora_A', 'lora_A.merged')
-                lora_keys[new_key] = model_to_merge.param_dict[old_key].shape
-                model_to_merge.param_dict[new_key] = model_to_merge.param_dict.pop(old_key)
-            else:
-                model_to_merge.param_dict.pop(old_key)
+        model_to_merge = param(load(os.path.join(model_dir, model_name)).to('cpu'))
         models_to_merge.append(model_to_merge)
         model_names.append(model_name)
-    for model_to_merge in models_to_merge:
-        for key, shape in lora_keys.items():
-            if key not in model_to_merge.param_dict:
-                model_to_merge.param_dict[key] = torch.nn.Parameter(torch.zeros(shape), requires_grad=False)
+    
     print('>>> model_names:', model_names)
     args.model_names = model_names
     
-    args.peft_model = get_peft_model(base_model, peft_config, adapter_name='merged')
+    outdir = args.outdir.replace('0.', '')
+    args.peft_model = base_model
     args.base_model = param(args.peft_model)
-    args.models_to_merge = [m.to('cuda') for m in models_to_merge]
+    args.models_to_merge = models_to_merge  # Already on CPU
+    args.output = outdir
     for model in args.models_to_merge:
         model.filter(filter_func)
     args.base_model.filter(filter_func)
@@ -129,12 +161,14 @@ def run_merge_lora(
     merge_method = getattr(merger, args.merge_method)
     merged_param = merge_method(**args)
 
+    # Keep merged parameters on CPU
     for n, p in merged_param.param_dict.items():
         utils.rsetattr(args.peft_model, n, torch.nn.Parameter(p, requires_grad=False)) 
     
-    final_model = args.peft_model.merge_and_unload(progressbar=True)
-    outdir = args.outdir.replace('0.', '')
-    args.peft_model.save_pretrained(outdir)
+    # Merge and unload while keeping on CPU
+    # final_model = args.peft_model.merge_and_unload(progressbar=True)
+    final_model = args.peft_model
+    # args.peft_model.save_pretrained(outdir)
     final_model.save_pretrained(outdir)
     args.tokenizer.save_pretrained(outdir)
 

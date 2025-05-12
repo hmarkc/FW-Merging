@@ -486,6 +486,7 @@ class LoraMergingMethod:
         second_merge_config: dict,
         max_iters: int = 5,
         step_size: float = 1,
+        outdir: str = None,
     ):
         """
         Merges models using the Frank-Wolfe optimization algorithm.
@@ -508,77 +509,89 @@ class LoraMergingMethod:
         def compute_gradient(peft_model, merged_model: dict, tokenizer, train_dataset):
             gradients = {}
 
+            # Replace parameters in peft_model with merged_model parameters
+            for name, param in peft_model.named_parameters():
+                if name in merged_model:
+                    param.data.copy_(merged_model[name])
+
             # Ensure model parameters require gradients and reset gradients
-            for name, param in merged_model.items():
-                if 'lora' in name:
-                    param.requires_grad = True
-                    param.grad = None
-
-            # Zero the gradients of models
-            for n, param in peft_model.named_parameters():
-                if 'lora' in n:
-                    assert param.requires_grad
-                if param.requires_grad:
-                    assert 'lora' in n
-                    param.grad = None
-
+            for param in peft_model.parameters():
+                param.requires_grad = True
+                param.grad = None
+                
+            peft_model = peft_model.to('cuda')
             avg_loss = defaultdict(float)
+            
             # Compute gradients outside inference mode
             for data_id, data_item in train_dataset.items():
-
                 # Prepare inputs (no gradients required for these)
-                for i in range(len(data_item['input'])):
+                max_i = 100
+                for i in tqdm.tqdm(range(len(data_item['input'])), desc="Computing gradients"):
                     torch.cuda.empty_cache()
                     input_len = tokenizer(data_item['input'][i], return_length=True)["length"][0]-1
-                    # if input_len > 900 - tokenizer(data_item['output'][i], return_length=True)["length"][0]:
-                    #     continue
                     input_ids = tokenizer(data_item['input'][i] + ' ' + data_item['output'][i], return_tensors='pt').input_ids
+                    
+                    # Get the device of the first layer to ensure consistency
+                    # first_layer_device = next(peft_model.parameters()).device
+                    input_ids = input_ids.to('cuda')
+                    
+                    # Create position_ids on the same device as input_ids
+                    position_ids = torch.arange(0, input_ids.shape[1], dtype=torch.long, device='cuda')
+                    position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
+                    
                     # label shifts the inputs by 1, mask out the input, which is the instruction
-                    labels = input_ids[:, 1+input_len:].to(peft_model.device)
+                    labels = input_ids[:, 1+input_len:].to('cuda')
 
                     # Compute the output and loss
-                    logits = torch.func.functional_call(
-                            peft_model,
-                            merged_model.param_dict,  # Pass the merged model parameters
-                            args=(input_ids.to(peft_model.device),)
-                    ).logits[:, input_len:-1, :]
-                    # cross entropy loss between the output and the labels, mask out instructions
+                    logits = peft_model(input_ids, position_ids=position_ids).logits[:, input_len:-1, :]
+                    
+                    # cross entropy loss between the output and the labels, mask out instructions
                     loss_fn = torch.nn.CrossEntropyLoss()
                     logits = logits.view(-1, logits.shape[-1])
                     labels = labels.view(-1)
                     
-                    loss = loss_fn(logits, labels)
+                    loss = loss_fn(logits, labels) / len(data_item['input'])
+                    
                     # Backpropagate the gradients
                     loss.backward()
                     avg_loss[data_id] += loss.item()
-                    del input_ids, logits, loss, labels
-            
+                    
+                    # Explicitly delete tensors and clear cache
+                    del input_ids, logits, loss, labels, position_ids
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                    
+                    if i >= max_i:
+                        break
+                import time
+                time.sleep(1)
+                    
+            peft_model = peft_model.to('cpu')
             torch.cuda.empty_cache()
             avg_loss = {k: v / len(train_dataset) for k, v in avg_loss.items()}
             print(f"Average Loss: {avg_loss}, Total Loss: {sum(avg_loss.values()) / len(avg_loss)}")
 
             # Save the gradients
-            for name, param in merged_model.items():
+            for name, param in peft_model.named_parameters():
                 if param.grad is not None:
-                    assert 'lora' in name
-                    gradients[name] = param.grad
+                    gradients[name] = param.grad.to('cpu')
+                    param.grad = None
 
             return gradients
 
         # Initialize the merged model as the base model
-        # merged_model = copy.deepcopy(base_model)
         merged_model = getattr(self, second_merge_method)(
                 models_to_merge=models_to_merge,
                 **second_merge_config
             )
         dataset = utils.from_json(proxy_dataset_path)
-        import time
-        start_time = time.strftime("%Y-%m-%d-%H-%M")
 
         for iteration in tqdm.tqdm(range(max_iters), desc="Frank-Wolfe Iteration"):
             torch.cuda.empty_cache()
-            # Compute the gradient based on a batch of data, dataset is a list of dictionaries
+            # Move peft_model to GPU
             gradients = compute_gradient(peft_model, merged_model, tokenizer, dataset)
+            # Move peft_model back to CPU
+            torch.cuda.empty_cache()
             grad_norm = torch.norm(torch.stack([torch.norm(g) for g in gradients.values()]))
 
             torch.set_grad_enabled(False)
@@ -586,20 +599,35 @@ class LoraMergingMethod:
             model_to_merge_dict = {}
             min_alignment = {}
             min_idx = {}
+            import time 
+            print("Finish computing gradients")
+            time.sleep(10)
+            
+            # Process one model at a time to reduce memory usage
             for i, model_to_merge in enumerate(models_to_merge):
+                torch.cuda.empty_cache()
                 for param_name, param_value in model_to_merge.items():
-                    # caclulate consine similarity
-                    grad = gradients[param_name]
-                    ckpt = model_to_merge[param_name]
+                    # Move tensors to GPU for faster computation
+                    grad = gradients[param_name].to('cuda')
+                    ckpt = param_value.to('cuda')
+                    # Calculate cosine similarity
                     param_alignment = torch.dot(grad.flatten(), ckpt.flatten()) / (torch.norm(grad) * torch.norm(ckpt))
+                    
                     if param_name not in min_alignment or param_alignment < min_alignment[param_name]:
                         min_alignment[param_name] = param_alignment
-                        if min_alignment[param_name] < 0:
-                            model_to_merge_dict[param_name] = param_value
-                            min_idx[param_name] = i
-                        else:
-                            model_to_merge_dict[param_name] = torch.zeros_like(param_value)
-            model_to_merge = param(model_to_merge_dict)
+                        model_to_merge_dict[param_name] = param_value.to('cpu')
+                        min_idx[param_name] = i
+                    
+                    # Clear GPU memory
+                    del grad, ckpt, param_alignment
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                time.sleep(1)
+                
+            print("Finish finding the task vector with the most alignment to the gradient")
+            time.sleep(5)
+            
+            model_to_merge = param(model_to_merge_dict).to('cpu')
             chosen_model = {model_name: 0 for model_name in model_names}
             for k in min_idx.values():
                 chosen_model[model_names[k]] += 1
@@ -607,7 +635,7 @@ class LoraMergingMethod:
             # Determine step size
             step = 2 / (iteration + 2) * step_size
             
-            # print iteration information
+            # print iteration information
             print(f"Iteration {iteration+1}, Task Vector: {chosen_model}, Gradient Norm: {grad_norm:.6f}, Step Size: {step:.6f}")
             
             # Update merged model parameters using second merge method
@@ -616,7 +644,15 @@ class LoraMergingMethod:
                 models_to_merge=[merged_model / scaling, (model_to_merge - merged_model) * step],
                 **second_merge_config
             )
-            
+            print("Finish updating the merged model parameters")
+            time.sleep(5)
             torch.set_grad_enabled(True)
+
+            if iteration % 2 == 0:
+                if outdir is not None:
+                    peft_model.save_pretrained(f"{outdir}/iter_{iteration+1}")
+            
+            # Clear memory after each iteration
+            torch.cuda.empty_cache()
 
         return merged_model

@@ -7,7 +7,7 @@ model_loader: auto
 dtype: auto
 max_iters: 10
 step_size: 1
-proxy_dataset_path: data/proxy_300.json 
+proxy_dataset_path: data/rebuttal/proxy_100.json 
 
 # for merge
 second_merge_method: task_arithmetic

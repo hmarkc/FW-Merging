@@ -338,7 +338,7 @@ def load_mmlu(mode='test'):
     data = data.map(
         lambda content: {
             'input': content["question"],
-            #'output': content['choices'][content['answer']]
+            'output': content['choices'][content['answer']]
         }, 
         remove_columns=data.features,
         num_proc=os.cpu_count(),
@@ -482,6 +482,76 @@ def load_pubmedqa(mode='test'):
 #     )        
 #     return data
 
+def load_mbpp(mode='test'):
+    data = datasets.load_dataset("google-research-datasets/mbpp", split='train').select(range(200))
+    data = data.map(
+        lambda content: {
+            'input': "You are an expert Python programmer, and here is your task: {text} Your code should pass these tests:\n\n{test_list[0]}\n{test_list[1]}\n{test_list[2]}\n[BEGIN]\n".format_map(content),
+            'output': f"{content['code']}"
+        }, 
+        remove_columns=data.features,
+        num_proc=os.cpu_count(),
+    )        
+    return data
+
+def load_humaneval(mode='test'):
+    data = datasets.load_dataset("openai/openai_humaneval", split='test')
+    data = data.map(
+        lambda content: {
+            'input': "{prompt}".format_map(content),
+            'output': f"{content['canonical_solution']}"
+        }, 
+        remove_columns=data.features,
+        num_proc=os.cpu_count(),
+    )        
+    return data
+
+def load_winogrande(mode='test'):
+    def process_choice(text):
+        right_idx = text['answer']
+        right_choice = right_idx  
+        return right_choice
+    
+    def format_example(doc, keys):
+        """
+        Question: <prompt>
+        1. <choice1>
+        2. <choice2>
+        Answer:
+        """
+        question = doc["sentence"].strip()
+        choices = "".join(
+            [f"{key}. {doc[['option1', 'option2'][i]]}\n" for i, key in enumerate(keys)]
+        )
+        prompt = f"Question: {question}\n{choices}Answer:"
+        return prompt
+
+    data = datasets.load_dataset("winogrande", "winogrande_xl", trust_remote_code=True)['validation'].select(range(1000))
+    data = data.map(
+        lambda content: {
+            'input': format_example(content, ['1', '2']),
+            'output': process_choice(content)
+        }, 
+        remove_columns=data.features,
+        num_proc=os.cpu_count(),
+    )        
+    return data
+
+
+def load_arc(mode='test'):
+    def format_choices(choices, labels):
+        return "".join([f"{labels[i]}. {choice}\n" for i, choice in enumerate(choices)])
+    data = datasets.load_dataset("allenai/ai2_arc", "ARC-Challenge", trust_remote_code=True)['test'].select(range(1000))
+    data = data.map(
+        lambda content: {
+            'input': f"Question: {content['question']}\nOptions: {format_choices(content['choices']['text'], content['choices']['label'])}\nAnswer:",
+            'output': f"{content['answerKey']}"
+        }, 
+        remove_columns=data.features,
+        num_proc=os.cpu_count(),
+    )        
+    return data
+
 def load_code(mode='test'):
     PROMPT_DICT = {
         "prompt_input": (
@@ -524,19 +594,19 @@ def load_gsm8k(mode='test'):
 
     raw_datasets = load_dataset('gsm8k', name='main')[mode]
     # 'article' 'highlights'
-    # def process(text):
-    #     text = text.replace('\n', ' ')
-    #     text = text.split('####')
-    #     text, answer = text[0], text[1]
-    #     text = utils.period(text)
-    #     text += 'The answer is' + answer
-    #     # text = re.sub(r'<<[^<>]+>>', '', text)
-    #     return text
+    def process(text):
+        text = text.replace('\n', ' ')
+        text = text.split('####')
+        text, answer = text[0], text[1]
+        text = text.strip() + "." if not text.strip().endswith(".") else text.strip()
+        text += 'The answer is' + answer
+        # text = re.sub(r'<<[^<>]+>>', '', text)
+        return answer
 
     raw_datasets = raw_datasets.map(
         lambda x: {
-            'input': f"Q: {x['question']}",
-            #'output': process(x['answer']),
+            'input': f"Q: {x['question']}\nA: ",
+            'output': f"{process(x['answer'])}",
         },
         remove_columns=raw_datasets.features,
         num_proc=os.cpu_count(),

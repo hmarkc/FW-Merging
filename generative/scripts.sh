@@ -102,18 +102,18 @@ done
 
 function run_frank_wolfe(){
 
-pos
-
-python run_merge.py \
---models-to-merge ${models_to_merge[@]} \
---models-name ${models_name[@]} \
---src-merge ${src_merge[@]} \
---yaml-file config/frank_wolfe_merge2.yml  \
---exclude-param ".*classifier.*" ".*bias.*"  \
---step-size 0.1 \
---max-iters 10 \
---outdir outs/llama_merged/frank_wolfe/task \
---lora 'llama_lora.json'
+# for step_size in 0.5 0.01 0.001; do
+    python run_merge.py \
+    --models-to-merge ${models_to_merge[@]} \
+    --models-name ${models_name[@]} \
+    --src-merge ${src_merge[@]} \
+    --yaml-file config/frank_wolfe_merge2.yml  \
+    --exclude-param ".*classifier.*" ".*bias.*"  \
+    --step-size 0.1 \
+    --max-iters 0 \
+    --outdir outs/rebuttal/frank_wolfe/task/step_size_${step_size} \
+    --lora 'llama_lora.json'
+# done
 
 
 }
