@@ -112,7 +112,25 @@ python run_merge.py \
 --exclude-param ".*classifier.*" ".*bias.*"  \
 --step-size 0.1 \
 --max-iters 10 \
---outdir outs/llama_merged/frank_wolfe/task \
+--outdir outs/llama_merged/frank_wolfe/task_1 \
+--lora 'llama_lora.json'
+
+
+}
+
+function run_frank_wolfe_loss_approx(){
+
+pos
+
+python run_merge.py \
+--models-to-merge ${models_to_merge[@]} \
+--models-name ${models_name[@]} \
+--src-merge ${src_merge[@]} \
+--yaml-file config/frank_wolfe_merge2_loss_approx.yml  \
+--exclude-param ".*classifier.*" ".*bias.*"  \
+--step-size 0.1 \
+--max-iters 10 \
+--outdir outs/llama_merged/frank_wolfe/task_1_loss_approx \
 --lora 'llama_lora.json'
 
 
