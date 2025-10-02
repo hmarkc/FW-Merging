@@ -458,6 +458,251 @@ class MergingMethod:
     from datasets import load_dataset
     @utils.args_inspector
     # @torch.inference_mode()
+    def frank_wolfe_merge_loss_approx(
+        self,
+        base_model: nn.Module,
+        models_finetuned: dict,
+        models_to_merge: list,
+        proxy_dataset_path: str,
+        second_merge_method: str,
+        second_merge_config: dict,
+        max_iters: int = 5,
+        step_size: float = 1,
+        reg_factor: float = 1.0,
+        eval_tasks: list = set(),
+        src_merge: list = [],
+    ):
+        """
+        Merges models using the Frank-Wolfe optimization algorithm.
+
+        Args:
+            base_model (nn.Module): The base model to start from.
+            models_to_merge (list): List of models to merge.
+            proxy_dataset_path (str): Path to the proxy dataset.
+            second_merge_method (str): Method to merge the models.
+            second_merge_config (dict): Configuration for the second merge method.
+            max_iters (int): Maximum number of iterations.
+            step_size (float): Step size for the optimization.
+            reg_factor (float): Regularization factor for regression
+            eval_tasks (list): List of tasks to evaluate on.
+            src_merge (list): List of source models to merge.
+
+        Returnsta's'k
+        nn.Module: Merged model.
+        """
+        # Calculate the projection of shared knowledge subspace
+        def calculate_projection(pretrained_model: dict, models_finetuned: dict):
+            # Compute the svd and projection here
+            pretrained_sd = pretrained_model
+            filtered_keys = [
+                k
+                for k in pretrained_sd.keys()
+                if ("layer_norm" not in k and "weight" in k and pretrained_sd[k].ndim == 2)
+            ]
+            print(filtered_keys)
+            task_vectors = []
+            for m in models_finetuned.values():
+                m.requires_grad_(False)
+            for param in pretrained_model.values():
+                param.requires_grad_(False)
+            # pretrained_model = pretrained_model.requires_grad_(False)
+            for model in models_finetuned.values():
+                model_sd = model.state_dict(keep_vars=True)
+                filtered_task_vector = {
+                    k: (model_sd[k].cuda() - pretrained_sd[k].cuda()) for k in filtered_keys
+                }
+                task_vectors.append(filtered_task_vector)
+
+            projection = {}
+            for layer_name in task_vectors[0].keys():
+                for i, vector in enumerate(task_vectors):
+                    layer_vector = vector[layer_name]
+                    u, s, v = torch.linalg.svd(layer_vector, full_matrices=False)
+                    if i == 0:
+                        print(f"Computed SVD for {layer_name}...")
+                        sum_u = torch.zeros_like(u, device=layer_vector.device)
+                        sum_s = torch.zeros_like(s, device=layer_vector.device)
+                        sum_v = torch.zeros_like(v, device=layer_vector.device)
+
+                    reduced_index_s = int(s.shape[0] / len(task_vectors))
+
+                    # select only the first reduced_index_s columns of u and place them
+                    sum_u[:, i * reduced_index_s : (i + 1) * reduced_index_s] = u[
+                        :, :reduced_index_s
+                    ]
+                    sum_s[i * reduced_index_s : (i + 1) * reduced_index_s] = s[
+                        :reduced_index_s
+                    ]
+                    # select only the first reduced_index_s rows of v and place them
+                    sum_v[i * reduced_index_s : (i + 1) * reduced_index_s, :] = v[
+                        :reduced_index_s, :
+                    ]
+                # SVD of shared subspace to avoid overlapping task vectors
+                u_u, s_u, v_u = torch.linalg.svd(sum_u, full_matrices=False)
+                # u_v, s_v, v_v = torch.linalg.svd(sum_v, full_matrices=False)
+                layer_proj = torch.matmul(
+                    u_u[:, : int(s.shape[0] / len(task_vectors))],
+                    u_u[:, : int(s.shape[0] / len(task_vectors))].T,
+                )
+                projection[layer_name] = layer_proj.to("cpu") # Projection matrix for each layer
+
+            for m in models_finetuned.values():
+                m.requires_grad_(True)
+            for param in pretrained_model.values():
+                param.requires_grad_(True)
+            
+            for filtered_task_vector in task_vectors:
+                for k, v in filtered_task_vector.items():
+                    filtered_task_vector[k] = v.cpu()
+            return projection, task_vectors
+
+
+        # Function to compute gradient of w^t
+        def compute_gradient(merged_model_sd: dict, base_model_sd: dict, task_vectors: list[dict]):
+            # Ensure model parameters require gradients and reset gradients
+            for param in merged_model_sd.values():
+                param.requires_grad = True
+                param.grad = None
+
+            # Zero the gradients of models
+            for model in models_finetuned.values():
+                model.train()
+                for param in model.parameters():
+                    param.requires_grad = True
+                    param.grad = None
+            losses = defaultdict(list)
+            gradients = {} 
+
+            for layer_name in task_vectors[0].keys():
+                task_layer_vectors = torch.stack([vec[layer_name] for vec in task_vectors])
+                merged_model_layer_vector = merged_model_sd[layer_name]
+                initial_model_layer_vector = base_model_sd[layer_name]
+                losses[layer_name] = 0.0
+                for task_layer_vector in task_layer_vectors:
+                    # -layer_vector
+                    part_1 = -task_layer_vector.cuda()
+                    # merged_model - layer_vector
+                    # part_2 = merged_model_layer_vector - initial_model_layer_vector - task_layer_vector.cuda()
+                    part_2 = merged_model_layer_vector - initial_model_layer_vector - task_layer_vector.cuda()
+                    # dot product between part_1 and part_2
+                    inner_product = torch.sum(part_1 * part_2)
+                    result = inner_product * inner_product
+                    losses[layer_name] += result
+
+                # print(f"Layer: {layer_name}, DoGE Loss: {losses[layer_name].item()}")
+                # calculate the gradients
+                losses[layer_name].backward(retain_graph=False)
+                g = merged_model_sd[layer_name].grad.clone().to("cpu")
+                g = (g - projection[layer_name] @ g)
+                gradients[layer_name] = g
+                merged_model_sd[layer_name].grad = None
+                del part_1, part_2, inner_product, result
+                torch.cuda.empty_cache()
+                
+            
+            # calculate the loss
+            avg_loss = sum(losses.values()) / len(task_vectors)
+            print(f"Average Loss: {avg_loss}, Total Loss: {sum(losses.values())}")
+            del losses
+
+            for name, param in merged_model_sd.items():
+                param.grad = None
+            
+            return gradients
+
+        def frank_wolfe_selection(gradients, models_to_merge, src_merge, granularity='task'):
+            if granularity == 'layer':
+                # Find the task vector with the most alignment to the gradient
+                model_to_merge_dict = {}
+                min_alignment = {}
+                min_idx = {}
+                for i, model_to_merge in enumerate(models_to_merge):
+                    for param_name, param_value in model_to_merge.items():
+                        # caclulate consine similarity
+                        grad = (gradients[param_name] if param_name in gradients else torch.zeros_like(param_value)).cuda()
+                        ckpt = model_to_merge[param_name]
+                        param_alignment = torch.dot(grad.flatten(), ckpt.flatten()) / (torch.norm(grad) * torch.norm(ckpt))
+                        if param_name not in min_alignment or param_alignment < min_alignment[param_name]:
+                            min_alignment[param_name] = param_alignment
+                            if min_alignment[param_name] < 0:
+                                model_to_merge_dict[param_name] = param_value
+                                min_idx[param_name] = i
+                            else:
+                                model_to_merge_dict[param_name] = torch.zeros_like(param_value)
+                model_to_merge = param(model_to_merge_dict)
+                chosen_model = {model_name: 0 for model_name in src_merge}
+                for k in min_idx.values():
+                    chosen_model[src_merge[k]] += 1
+                return model_to_merge, chosen_model
+            else:
+                min_inner_product = float('inf')
+                min_model = None
+                min_model_name = None
+                for model_name, model_to_merge in zip(src_merge, models_to_merge):
+                    inner_product_sum = 0
+                    for param_name, param_value in model_to_merge.items():
+                        # caclulate consine similarity
+                        grad = (gradients[param_name] if param_name in gradients else torch.zeros_like(param_value)).cuda()
+                        ckpt = model_to_merge[param_name]
+                        param_alignment = torch.dot(grad.flatten(), ckpt.flatten()) / (torch.norm(grad) * torch.norm(ckpt))
+                        inner_product_sum += param_alignment
+                    if inner_product_sum < min_inner_product:
+                        min_inner_product = inner_product_sum
+                        min_model = model_to_merge
+                        min_model_name = model_name
+                return min_model, min_model_name
+
+        # Initialize the merged model as the base model
+        # merged_model = copy.deepcopy(base_model)
+        merged_model = getattr(self, second_merge_method)(
+                base_model=copy.deepcopy(base_model),
+                models_to_merge=models_to_merge,
+                **second_merge_config
+            )
+        dataset = utils.from_json(proxy_dataset_path)
+        scaling = second_merge_config['scaling'] if 'scaling' in second_merge_config else 1.0
+        batch_size = len(dataset)
+
+        models_to_merge.append(copy.deepcopy(param(merged_model)))
+        src_merge.append('initial')
+
+        # Calculate the projection of shared knowledge subspace
+        print(merged_model)
+        projection, task_vectors = calculate_projection(merged_model, models_finetuned)
+        for iteration in tqdm(range(max_iters), desc="Frank-Wolfe Iteration"):
+            torch.cuda.empty_cache()
+        
+            torch.set_grad_enabled(True)
+            # Compute the gradient based on a batch of data, dataset is a list of dictionaries
+            dataset_batch = random.sample(dataset, batch_size)
+            gradients = compute_gradient(merged_model, base_model, task_vectors)
+            torch.set_grad_enabled(False)
+            grad_norm = torch.norm(torch.stack([torch.norm(g) for g in gradients.values()]))
+
+            model_to_merge, chosen_model = frank_wolfe_selection(gradients, models_to_merge, src_merge, granularity='layer')
+            
+            # Determine step size
+            step = 2 / (((batch_size * iteration) // len(dataset) ) + 2) * step_size
+            
+            # print iteration information
+            print(f"Iteration {iteration+1}, Task Vector: {chosen_model}, Gradient Norm: {grad_norm:.6f}, Step Size: {step:.6f}")
+            
+            second_merge_config['scaling'] = scaling * step
+            # Update merged model parameters using second merge method
+            merged_model = getattr(self, second_merge_method)(
+                base_model=merged_model,
+                models_to_merge=[model_to_merge],
+                **second_merge_config
+            )
+            
+            for model in models_finetuned.values():
+                model.eval()
+            del model_to_merge, chosen_model
+
+        return merged_model
+
+    @utils.args_inspector
+    # @torch.inference_mode()
     def frank_wolfe_merge(
         self,
         base_model: nn.Module,

@@ -147,6 +147,23 @@ python run_merge.py \
 
 }
 
+function run_frank_wolfe_loss_approx(){
+
+pos
+
+python run_merge.py \
+--models-to-merge ${models_to_merge[@]} \
+--models-name ${models_name[@]} \
+--src-merge ${src_merge[@]} \
+--yaml-file config/frank_wolfe_merge2_loss_approx.yml \
+--data-path $data_path \
+--exclude-param ".*classifier.*" ".*bias.*"  \
+--step-size 0.1 \
+--outdir $outdir \
+--eval-tasks ${eval_tasks[@]}
+
+}
+
 
 function run_task_arith(){
 
